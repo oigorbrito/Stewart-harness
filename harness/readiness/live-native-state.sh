@@ -28,6 +28,19 @@ trap restore_fixture EXIT
 gh pr reopen "$pr_number" --repo "$repo" >/dev/null 2>&1 || true
 set_draft
 
+# Rebuild the persistent fixture from the exact current main commit so that
+# BEHIND/UNSTABLE from a previous qualification run cannot contaminate this run.
+git fetch origin main "$fixture_branch"
+git worktree add --force "$worktree" "origin/$fixture_branch"
+git -C "$worktree" config user.name "stewart-harness[bot]"
+git -C "$worktree" config user.email "stewart-harness[bot]@users.noreply.github.com"
+git -C "$worktree" reset --hard origin/main
+printf 'Persistent Stewart native GitHub state fixture. DO NOT MERGE.\nrun=%s\n' "${GITHUB_RUN_ID:?}" > "$worktree/.stewart-native-fixture.txt"
+git -C "$worktree" add .stewart-native-fixture.txt
+git -C "$worktree" commit -m "test: reset persistent native fixture ${GITHUB_RUN_ID}"
+git -C "$worktree" push --force-with-lease origin HEAD:"$fixture_branch"
+echo "NATIVE_FIXTURE_SYNC base=$(git rev-parse origin/main) head=$(git -C "$worktree" rev-parse HEAD) decision=PASS"
+
 query_pr() {
   gh api graphql \
     -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state isDraft mergeStateStatus mergeable reviewDecision statusCheckRollup{state} baseRefName headRefName headRefOid}}}' \
@@ -71,10 +84,6 @@ gh api -X PATCH "repos/$repo/check-runs/$check_id" \
 classify_expect READY_FOR_MERGE_CANDIDATE 20
 
 # 4. Move the real PR head. Old-head success must not qualify the new head.
-git fetch origin "$fixture_branch"
-git worktree add --force "$worktree" "origin/$fixture_branch"
-git -C "$worktree" config user.name "stewart-harness[bot]"
-git -C "$worktree" config user.email "stewart-harness[bot]@users.noreply.github.com"
 printf 'head mutation run=%s\n' "${GITHUB_RUN_ID:?}" >> "$worktree/.stewart-native-fixture.txt"
 git -C "$worktree" add .stewart-native-fixture.txt
 git -C "$worktree" commit -m "test: mutate persistent native fixture ${GITHUB_RUN_ID}"
