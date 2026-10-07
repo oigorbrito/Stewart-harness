@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
+      STEWART_FIXTURE_TOKEN: ${{ secrets.STEWART_FIXTURE_TOKEN }}
     steps:
       - name: Check out exact triggering commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
