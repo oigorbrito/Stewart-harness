@@ -80,6 +80,30 @@ dispatch_fixture_checks() {
   echo "NATIVE_FIXTURE_ACTIONS head=$target_sha run=$run_id decision=PASS"
 }
 
+assert_self_token_fail_closed() {
+  local attempts="${1:-20}" response actual merge_status rollup
+  for ((i=1; i<=attempts; i++)); do
+    response="$(mktemp)"
+    query_pr > "$response"
+    actual="$(bash "$classifier" --response "$response")"
+    merge_status="$(jq -r '.data.repository.pullRequest.mergeStateStatus' "$response")"
+    rollup="$(jq -r '.data.repository.pullRequest.statusCheckRollup.state' "$response")"
+    rm -f "$response"
+    if [[ "$merge_status" == "UNSTABLE" && "$rollup" == "SUCCESS" && "$actual" == "NOT_READY_CHECKS" ]]; then
+      echo "SELF_TOKEN_FAIL_CLOSED mergeStateStatus=$merge_status checks=$rollup classifier=$actual attempt=$i decision=PASS"
+      return 0
+    fi
+    if [[ "$merge_status" == "CLEAN" && "$rollup" == "SUCCESS" && "$actual" == "READY_FOR_MERGE_CANDIDATE" ]]; then
+      echo "SELF_TOKEN_NATIVE_CLEAN checks=$rollup classifier=$actual attempt=$i decision=PASS"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "SELF_TOKEN_BOUNDARY decision=FAIL" >&2
+  query_pr >&2 || true
+  return 1
+}
+
 classify_expect() {
   local expected="$1" attempts="${2:-1}" response actual
   for ((i=1; i<=attempts; i++)); do
@@ -111,12 +135,15 @@ pending_json="$(gh api -X POST "repos/$repo/check-runs" \
 check_id="$(jq -r .id <<<"$pending_json")"
 classify_expect NOT_READY_CHECKS 12
 
-# 3. Same head becomes ready only after all observed checks are successful.
+# 3. Complete every state signal we can create with the repository's own
+# GITHUB_TOKEN. GitHub may still report UNSTABLE because self-token mutations
+# do not reproduce an external pull_request:synchronize event. In that case
+# the classifier must remain fail-closed.
 gh api -X PATCH "repos/$repo/check-runs/$check_id" \
   -f status='completed' -f conclusion='success' >/dev/null
 dispatch_fixture_checks "$head_sha"
 set_success_status "$head_sha"
-classify_expect READY_FOR_MERGE_CANDIDATE 20
+assert_self_token_fail_closed 20
 
 # 4. Move the real PR head. Old-head success must not qualify the new head.
 printf 'head mutation run=%s\n' "${GITHUB_RUN_ID:?}" >> "$worktree/.stewart-native-fixture.txt"
@@ -129,14 +156,16 @@ test "$head_sha" != "$old_head"
 echo "NATIVE_HEAD_MOVED old=$old_head new=$head_sha decision=PASS"
 classify_expect NOT_READY_CHECKS 12
 
-# 5. Success bound to the new head restores readiness.
+# 5. Bind fresh success evidence to the new head and re-check the same
+# platform boundary. Old-head success must never qualify the new head.
 success_json="$(gh api -X POST "repos/$repo/check-runs" \
   -f name='stewart-native-fixture-check' \
   -f head_sha="$head_sha" \
   -f status='completed' -f conclusion='success')"
 test -n "$(jq -r .id <<<"$success_json")"
 dispatch_fixture_checks "$head_sha"
-classify_expect READY_FOR_MERGE_CANDIDATE 20
+set_success_status "$head_sha"
+assert_self_token_fail_closed 20
 
 # 6. Closed native state dominates an otherwise-good head.
 gh pr close "$pr_number" --repo "$repo" >/dev/null
@@ -147,4 +176,6 @@ gh pr reopen "$pr_number" --repo "$repo" >/dev/null
 set_draft
 classify_expect NOT_READY_DRAFT 8
 
-echo "NATIVE_GITHUB_STATE_MATRIX=PASS"
+echo "NATIVE_SELF_TOKEN_STATE_MATRIX=PASS"
+echo "RECURRING_NATIVE_CLEAN_POSITIVE=NOT_PROVEN_WITH_GITHUB_TOKEN"
+echo "EXTERNAL_PRINCIPAL_EVENT_DELIVERY=REQUIRED_FOR_FULL_POSITIVE_GATE"
