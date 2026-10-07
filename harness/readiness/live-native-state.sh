@@ -58,7 +58,16 @@ dispatch_fixture_checks() {
     sleep 2
   done
   [[ -n "$run_id" ]] || { echo "No workflow_dispatch run associated with $target_sha" >&2; return 1; }
-  gh run watch "$run_id" --repo "$repo" --exit-status
+  local status="" conclusion=""
+  for ((i=1; i<=30; i++)); do
+    read -r status conclusion < <(gh run view "$run_id" --repo "$repo" --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
+    if [[ "$status" == "completed" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$status" == "completed" ]] || { echo "Timed out waiting for workflow run $run_id" >&2; return 1; }
+  [[ "$conclusion" == "success" ]] || { echo "Fixture workflow run $run_id conclusion=$conclusion" >&2; return 1; }
   echo "NATIVE_FIXTURE_ACTIONS head=$target_sha run=$run_id decision=PASS"
 }
 
