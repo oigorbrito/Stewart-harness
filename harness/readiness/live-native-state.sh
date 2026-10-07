@@ -47,6 +47,15 @@ query_pr() {
     -f owner="$owner" -f name="$name" -F number="$pr_number"
 }
 
+set_success_status() {
+  local target_sha="$1"
+  gh api -X POST "repos/$repo/statuses/$target_sha" \
+    -f state='success' \
+    -f context='stewart/native-fixture-status' \
+    -f description='Stewart harness native fixture status' >/dev/null
+  echo "NATIVE_COMMIT_STATUS head=$target_sha state=success decision=PASS"
+}
+
 dispatch_fixture_checks() {
   local target_sha="$1" run_id=""
   gh workflow run readiness-harness.yml --repo "$repo" --ref "$fixture_branch"
@@ -106,6 +115,7 @@ classify_expect NOT_READY_CHECKS 12
 gh api -X PATCH "repos/$repo/check-runs/$check_id" \
   -f status='completed' -f conclusion='success' >/dev/null
 dispatch_fixture_checks "$head_sha"
+set_success_status "$head_sha"
 classify_expect READY_FOR_MERGE_CANDIDATE 20
 
 # 4. Move the real PR head. Old-head success must not qualify the new head.
