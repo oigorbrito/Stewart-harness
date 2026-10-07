@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source .github/scripts/repository-steward-readiness-run-association.sh
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\nsource "$SCRIPT_DIR/repository-steward-readiness-run-association.sh"
 tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
 sha=1111111111111111111111111111111111111111
 make_response() {
