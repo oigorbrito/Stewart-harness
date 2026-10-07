@@ -1,0 +1,48 @@
+name: Stewart Readiness Harness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readiness-synthetic:
+    name: Readiness synthetic matrices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in harness/readiness/*.sh; do
+            bash -n "$f"
+          done
+      - name: Classifier matrix
+        shell: bash
+        working-directory: harness/readiness
+        run: bash repository-steward-readiness-classifier-v2-tests.sh
+      - name: Association matrix
+        shell: bash
+        working-directory: harness/readiness
+        run: bash repository-steward-readiness-run-association-tests.sh
+
+  provenance:
+    name: Source provenance guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify imported accepted core
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_repo="oigorbrito/searchleads"
+          expected_commit="450243c4de7223db5d2e0b10de737de403520d3d"
+          test "$(jq -r .source_repository harness/readiness/provenance.json)" = "$expected_repo"
+          test "$(jq -r .source_commit harness/readiness/provenance.json)" = "$expected_commit"
+          jq -e '.authority == ["READ","REPORT"]' harness/readiness/provenance.json >/dev/null
+          jq -e '.acceptance_scope == "synthetic_core_import"' harness/readiness/provenance.json >/dev/null
