@@ -8,6 +8,45 @@ pr_number=3
 fixture_branch="fixture/native-state-persistent"
 classifier="$PWD/harness/readiness/repository-steward-readiness-classifier-v2.sh"
 worktree="$(mktemp -d)"
+external_token="${STEWART_FIXTURE_TOKEN:-}"
+external_mode=false
+if [[ -n "$external_token" ]]; then
+  external_mode=true
+fi
+
+push_fixture() {
+  local mode="${1:-normal}"
+  if [[ "$external_mode" == true ]]; then
+    local auth
+    auth="$(printf 'x-access-token:%s' "$external_token" | base64 -w0)"
+    git -C "$worktree" -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push $mode origin HEAD:"$fixture_branch"
+    echo "FIXTURE_PRINCIPAL=EXTERNAL"
+  else
+    git -C "$worktree" push $mode origin HEAD:"$fixture_branch"
+    echo "FIXTURE_PRINCIPAL=GITHUB_TOKEN"
+  fi
+}
+
+wait_pr_event_checks() {
+  local target_sha="$1" run_id="" status="" conclusion=""
+  [[ "$external_mode" == true ]] || return 0
+  for ((i=1; i<=30; i++)); do
+    run_id="$(gh run list --repo "$repo" --workflow readiness-harness.yml --branch "$fixture_branch" --event pull_request --limit 20 --json databaseId,headSha,status,conclusion --jq ".[] | select(.headSha == \"$target_sha\") | .databaseId" | head -n1)"
+    [[ -n "$run_id" ]] && break
+    sleep 2
+  done
+  [[ -n "$run_id" ]] || { echo "No pull_request workflow run associated with external head $target_sha" >&2; return 1; }
+  for ((i=1; i<=60; i++)); do
+    read -r status conclusion < <(gh run view "$run_id" --repo "$repo" --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
+    [[ "$status" == "completed" ]] && break
+    sleep 2
+  done
+  [[ "$status" == "completed" && "$conclusion" == "success" ]] || {
+    echo "External pull_request workflow run $run_id status=$status conclusion=$conclusion" >&2
+    return 1
+  }
+  echo "EXTERNAL_PR_EVENT head=$target_sha run=$run_id decision=PASS"
+}
 
 set_draft() {
   local pr_id
@@ -38,8 +77,15 @@ git -C "$worktree" reset --hard origin/main
 printf 'Persistent Stewart native GitHub state fixture. DO NOT MERGE.\nrun=%s\n' "${GITHUB_RUN_ID:?}" > "$worktree/.stewart-native-fixture.txt"
 git -C "$worktree" add .stewart-native-fixture.txt
 git -C "$worktree" commit -m "test: reset persistent native fixture ${GITHUB_RUN_ID}"
-git -C "$worktree" push --force-with-lease origin HEAD:"$fixture_branch"
-echo "NATIVE_FIXTURE_SYNC base=$(git rev-parse origin/main) head=$(git -C "$worktree" rev-parse HEAD) decision=PASS"
+if [[ "$external_mode" == true ]]; then
+  push_fixture "--force-with-lease"
+else
+  git -C "$worktree" push --force-with-lease origin HEAD:"$fixture_branch"
+  echo "FIXTURE_PRINCIPAL=GITHUB_TOKEN"
+fi
+head_sha="$(git -C "$worktree" rev-parse HEAD)"
+wait_pr_event_checks "$head_sha"
+echo "NATIVE_FIXTURE_SYNC base=$(git rev-parse origin/main) head=$head_sha decision=PASS"
 
 query_pr() {
   gh api graphql \
@@ -143,15 +189,26 @@ gh api -X PATCH "repos/$repo/check-runs/$check_id" \
   -f status='completed' -f conclusion='success' >/dev/null
 dispatch_fixture_checks "$head_sha"
 set_success_status "$head_sha"
-assert_self_token_fail_closed 20
+if [[ "$external_mode" == true ]]; then
+  classify_expect READY_FOR_MERGE_CANDIDATE 30
+  echo "EXTERNAL_NATIVE_CLEAN_POSITIVE=PASS"
+else
+  assert_self_token_fail_closed 20
+fi
 
 # 4. Move the real PR head. Old-head success must not qualify the new head.
 printf 'head mutation run=%s\n' "${GITHUB_RUN_ID:?}" >> "$worktree/.stewart-native-fixture.txt"
 git -C "$worktree" add .stewart-native-fixture.txt
 git -C "$worktree" commit -m "test: mutate persistent native fixture ${GITHUB_RUN_ID}"
 old_head="$head_sha"
-git -C "$worktree" push origin HEAD:"$fixture_branch"
+if [[ "$external_mode" == true ]]; then
+  push_fixture
+else
+  git -C "$worktree" push origin HEAD:"$fixture_branch"
+  echo "FIXTURE_PRINCIPAL=GITHUB_TOKEN"
+fi
 head_sha="$(git -C "$worktree" rev-parse HEAD)"
+wait_pr_event_checks "$head_sha"
 test "$head_sha" != "$old_head"
 echo "NATIVE_HEAD_MOVED old=$old_head new=$head_sha decision=PASS"
 classify_expect NOT_READY_CHECKS 12
@@ -176,6 +233,12 @@ gh pr reopen "$pr_number" --repo "$repo" >/dev/null
 set_draft
 classify_expect NOT_READY_DRAFT 8
 
-echo "NATIVE_SELF_TOKEN_STATE_MATRIX=PASS"
-echo "RECURRING_NATIVE_CLEAN_POSITIVE=NOT_PROVEN_WITH_GITHUB_TOKEN"
-echo "EXTERNAL_PRINCIPAL_EVENT_DELIVERY=REQUIRED_FOR_FULL_POSITIVE_GATE"
+if [[ "$external_mode" == true ]]; then
+  echo "NATIVE_EXTERNAL_PRINCIPAL_STATE_MATRIX=PASS"
+  echo "RECURRING_NATIVE_CLEAN_POSITIVE=PASS"
+  echo "EXTERNAL_PRINCIPAL_EVENT_DELIVERY=PASS"
+else
+  echo "NATIVE_SELF_TOKEN_STATE_MATRIX=PASS"
+  echo "RECURRING_NATIVE_CLEAN_POSITIVE=NOT_PROVEN_WITH_GITHUB_TOKEN"
+  echo "EXTERNAL_PRINCIPAL_EVENT_DELIVERY=REQUIRED_FOR_FULL_POSITIVE_GATE"
+fi
