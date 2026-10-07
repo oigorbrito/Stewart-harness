@@ -4,33 +4,29 @@ set -euo pipefail
 repo="${GITHUB_REPOSITORY:?}"
 owner="${repo%%/*}"
 name="${repo##*/}"
-run_id="${GITHUB_RUN_ID:?}"
-branch="fixture/native-${run_id}"
-fixture=".stewart-native-fixture-${run_id}.txt"
-classifier="harness/readiness/repository-steward-readiness-classifier-v2.sh"
+pr_number=3
+fixture_branch="fixture/native-state-persistent"
+classifier="$PWD/harness/readiness/repository-steward-readiness-classifier-v2.sh"
+worktree="$(mktemp -d)"
 
-cleanup() {
-  set +e
-  if [[ -n "${pr_number:-}" ]]; then
-    gh pr close "$pr_number" --repo "$repo" >/dev/null 2>&1 || true
-  fi
-  git push origin --delete "$branch" >/dev/null 2>&1 || true
+set_draft() {
+  local pr_id
+  pr_id="$(gh pr view "$pr_number" --repo "$repo" --json id --jq .id)"
+  gh api graphql \
+    -f query='mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{isDraft}}}' \
+    -f id="$pr_id" >/dev/null
 }
-trap cleanup EXIT
 
-git config user.name "stewart-harness[bot]"
-git config user.email "stewart-harness[bot]@users.noreply.github.com"
-git checkout -b "$branch"
-printf 'native fixture run %s\n' "$run_id" > "$fixture"
-git add "$fixture"
-git commit -m "test: native readiness fixture ${run_id}"
-git push origin "$branch"
+restore_fixture() {
+  set +e
+  gh pr reopen "$pr_number" --repo "$repo" >/dev/null 2>&1 || true
+  set_draft >/dev/null 2>&1 || true
+  git worktree remove --force "$worktree" >/dev/null 2>&1 || true
+}
+trap restore_fixture EXIT
 
-pr_url="$(gh pr create --repo "$repo" --base main --head "$branch" --draft \
-  --title "test: Stewart native fixture ${run_id} [DO NOT MERGE]" \
-  --body "Ephemeral fixture created by the Stewart harness. It will be closed and its branch deleted automatically.")"
-pr_number="${pr_url##*/}"
-echo "FIXTURE_PR=$pr_number"
+gh pr reopen "$pr_number" --repo "$repo" >/dev/null 2>&1 || true
+set_draft
 
 query_pr() {
   gh api graphql \
@@ -52,46 +48,58 @@ classify_expect() {
     sleep 2
   done
   echo "NATIVE_STATE expected=$expected actual=$actual decision=FAIL" >&2
+  query_pr >&2 || true
   return 1
 }
 
-# Native draft state dominates all later fields.
-classify_expect NOT_READY_DRAFT 6
+# 1. Native draft state.
+classify_expect NOT_READY_DRAFT 8
 
+# 2. Ready PR with an explicitly pending check.
 gh pr ready "$pr_number" --repo "$repo" >/dev/null
-
-head_sha="$(git rev-parse HEAD)"
+head_sha="$(gh pr view "$pr_number" --repo "$repo" --json headRefOid --jq .headRefOid)"
 pending_json="$(gh api -X POST "repos/$repo/check-runs" \
   -f name='stewart-native-fixture-check' \
   -f head_sha="$head_sha" \
   -f status='in_progress')"
 check_id="$(jq -r .id <<<"$pending_json")"
-classify_expect NOT_READY_CHECKS 10
+classify_expect NOT_READY_CHECKS 12
 
+# 3. Same head becomes ready only after all observed checks are successful.
 gh api -X PATCH "repos/$repo/check-runs/$check_id" \
   -f status='completed' -f conclusion='success' >/dev/null
-classify_expect READY_FOR_MERGE_CANDIDATE 12
+classify_expect READY_FOR_MERGE_CANDIDATE 20
 
+# 4. Move the real PR head. Old-head success must not qualify the new head.
+git fetch origin "$fixture_branch"
+git worktree add --force "$worktree" "origin/$fixture_branch"
+git -C "$worktree" config user.name "stewart-harness[bot]"
+git -C "$worktree" config user.email "stewart-harness[bot]@users.noreply.github.com"
+printf 'head mutation run=%s\n' "${GITHUB_RUN_ID:?}" >> "$worktree/.stewart-native-fixture.txt"
+git -C "$worktree" add .stewart-native-fixture.txt
+git -C "$worktree" commit -m "test: mutate persistent native fixture ${GITHUB_RUN_ID}"
 old_head="$head_sha"
-printf 'head mutation %s\n' "$run_id" >> "$fixture"
-git add "$fixture"
-git commit -m "test: mutate native fixture head ${run_id}"
-git push origin "$branch"
-head_sha="$(git rev-parse HEAD)"
+git -C "$worktree" push origin HEAD:"$fixture_branch"
+head_sha="$(git -C "$worktree" rev-parse HEAD)"
 test "$head_sha" != "$old_head"
 echo "NATIVE_HEAD_MOVED old=$old_head new=$head_sha decision=PASS"
+classify_expect NOT_READY_CHECKS 12
 
-# Old-head success must not make the new head ready.
-classify_expect NOT_READY_CHECKS 10
-
+# 5. Success bound to the new head restores readiness.
 success_json="$(gh api -X POST "repos/$repo/check-runs" \
   -f name='stewart-native-fixture-check' \
   -f head_sha="$head_sha" \
   -f status='completed' -f conclusion='success')"
 test -n "$(jq -r .id <<<"$success_json")"
-classify_expect READY_FOR_MERGE_CANDIDATE 12
+classify_expect READY_FOR_MERGE_CANDIDATE 20
 
+# 6. Closed native state dominates an otherwise-good head.
 gh pr close "$pr_number" --repo "$repo" >/dev/null
-classify_expect NOT_READY_STATE 6
+classify_expect NOT_READY_STATE 8
+
+# Leave the persistent fixture safe for the next run.
+gh pr reopen "$pr_number" --repo "$repo" >/dev/null
+set_draft
+classify_expect NOT_READY_DRAFT 8
 
 echo "NATIVE_GITHUB_STATE_MATRIX=PASS"
