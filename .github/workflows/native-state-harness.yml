@@ -1,6 +1,7 @@
 name: Stewart Native GitHub State Harness
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
