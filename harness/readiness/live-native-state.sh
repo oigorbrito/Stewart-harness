@@ -47,6 +47,21 @@ query_pr() {
     -f owner="$owner" -f name="$name" -F number="$pr_number"
 }
 
+dispatch_fixture_checks() {
+  local target_sha="$1" run_id=""
+  gh workflow run readiness-harness.yml --repo "$repo" --ref "$fixture_branch"
+  for ((i=1; i<=20; i++)); do
+    run_id="$(gh run list --repo "$repo" --workflow readiness-harness.yml --branch "$fixture_branch" --event workflow_dispatch --limit 10 --json databaseId,headSha,status,conclusion --jq ".[] | select(.headSha == \"$target_sha\") | .databaseId" | head -n1)"
+    if [[ -n "$run_id" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ -n "$run_id" ]] || { echo "No workflow_dispatch run associated with $target_sha" >&2; return 1; }
+  gh run watch "$run_id" --repo "$repo" --exit-status
+  echo "NATIVE_FIXTURE_ACTIONS head=$target_sha run=$run_id decision=PASS"
+}
+
 classify_expect() {
   local expected="$1" attempts="${2:-1}" response actual
   for ((i=1; i<=attempts; i++)); do
@@ -81,6 +96,7 @@ classify_expect NOT_READY_CHECKS 12
 # 3. Same head becomes ready only after all observed checks are successful.
 gh api -X PATCH "repos/$repo/check-runs/$check_id" \
   -f status='completed' -f conclusion='success' >/dev/null
+dispatch_fixture_checks "$head_sha"
 classify_expect READY_FOR_MERGE_CANDIDATE 20
 
 # 4. Move the real PR head. Old-head success must not qualify the new head.
@@ -100,6 +116,7 @@ success_json="$(gh api -X POST "repos/$repo/check-runs" \
   -f head_sha="$head_sha" \
   -f status='completed' -f conclusion='success')"
 test -n "$(jq -r .id <<<"$success_json")"
+dispatch_fixture_checks "$head_sha"
 classify_expect READY_FOR_MERGE_CANDIDATE 20
 
 # 6. Closed native state dominates an otherwise-good head.
