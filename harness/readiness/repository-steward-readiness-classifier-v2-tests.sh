@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "${BASH_SOURCE[0]%/*}/repository-steward-readiness-classifier-v2.sh"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\nsource "$SCRIPT_DIR/repository-steward-readiness-classifier-v2.sh"
 readiness_classifier_self_test
 
 assert_v2() {
