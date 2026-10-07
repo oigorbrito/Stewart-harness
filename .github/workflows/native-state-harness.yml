@@ -9,6 +9,7 @@ on:
     - cron: '17 3 * * *'
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
   checks: write
