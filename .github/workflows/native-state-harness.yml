@@ -1,0 +1,36 @@
+name: Stewart Native GitHub State Harness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: write
+
+concurrency:
+  group: stewart-native-state
+  cancel-in-progress: false
+
+jobs:
+  native-state:
+    name: Native GitHub state matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out exact triggering commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Execute native GitHub state transitions
+        shell: bash
+        run: bash harness/readiness/live-native-state.sh
