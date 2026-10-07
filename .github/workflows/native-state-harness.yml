@@ -9,13 +9,15 @@ on:
     - cron: '17 3 * * *'
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
+  statuses: write
   checks: write
 
 concurrency:
   group: stewart-native-state
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   native-state:
