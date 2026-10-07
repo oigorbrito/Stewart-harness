@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "capability": "repository-steward-readiness",
+  "source_repository": "oigorbrito/searchleads",
+  "source_commit": "450243c4de7223db5d2e0b10de737de403520d3d",
+  "authority": ["READ", "REPORT"],
+  "acceptance_scope": "synthetic_core_import",
+  "notes": "Imported from the previously target-accepted Searchleads readiness evidence state. This does not by itself prove native GitHub event behavior in Stewart-harness."
+}
